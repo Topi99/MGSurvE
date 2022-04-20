@@ -8,14 +8,15 @@ import math
 import operator
 import random
 from abc import ABC
-from typing import List, Union, Optional
+from os import path
+from typing import List, Union, Optional, Tuple, Any, Dict, Callable
 
-import numpy
 import numpy as np
 import pandas as pd
-from os import path
 import numpy.random as rand
 from deap import base, creator, algorithms, tools, benchmarks
+
+from .landscape import Landscape
 
 ###############################################################################
 # Fitness function
@@ -611,12 +612,35 @@ class ParticleProps(ABC):
 Particle = Union[List[float], ParticleProps]
 
 
-def optimize_traps_pso() -> None:
+def optimize_traps_pso(
+    landscape: Landscape,
+    generations: int = 1000,
+    bbox: Tuple[Tuple[float, float], Tuple[float, float]] = None,
+    pop_size: int = None,
+    mating_params: Dict[str, float] = None,
+    mutation_params: Dict[str, float] = None,
+    selection_params: Dict[str, float] = None,
+    optim_function: Callable[
+        [Landscape, Dict[str, Any]], float
+    ] = getDaysTillTrapped,
+    fit_funcs: Dict[str, float] = None,
+    verbose: bool = True,
+) -> Tuple[Landscape, pd.DataFrame]:
     """Obtains the optimal position for a given set of traps
 
     Returns:
         None
     """
+
+    mating_params = mating_params or {'mate': .3, 'cxpb': 0.5}
+    mutation_params = mutation_params or {
+        'mean': 0, 'sd': 100, 'mutpb': .4, 'ipb': .5
+    }
+    selection_params = selection_params or {'tSize': 3}
+    fit_funcs = fit_funcs or {'outer': np.mean, 'inner': np.max}
+    bbox = bbox or landscape.getBoundingBox()
+    pop_size = pop_size or int(10 * (landscape.trapsNumber * 1.25))
+
     def generate_particle(
         size: int,
         position_min: int,
@@ -707,10 +731,10 @@ def optimize_traps_pso() -> None:
     toolbox = create_toolbox()
     population: List[Particle] = toolbox.population(n=5)
     stats = tools.Statistics(lambda ind: ind.fitness.values)
-    stats.register("avg", numpy.mean)
-    stats.register("std", numpy.std)
-    stats.register("min", numpy.min)
-    stats.register("max", numpy.max)
+    stats.register("avg", np.mean)
+    stats.register("std", np.std)
+    stats.register("min", np.min)
+    stats.register("max", np.max)
 
     logbook = tools.Logbook()
     logbook.header = ["gen", "evals"] + stats.fields
