@@ -54,7 +54,7 @@ def getMarkovAbsorbing(tauCan, trapsN):
 
 
 def getFundamentalMatrix(tau, sitesN, trapsN):
-    """ Get Markov's fundamental matrix.
+    """ Get Markov's fundamental matrix (pseudo-inverse).
     
     Equivalent to using reshapeInCanonicalForm and getMarkovAbsorbing (which
         should be deprecated).
@@ -71,6 +71,27 @@ def getFundamentalMatrix(tau, sitesN, trapsN):
     R = tau[:sitesN, -trapsN:]
     I = np.identity(Q.shape[0])
     F = np.linalg.inv(np.subtract(I, Q))
+    return F
+
+def getFundamentalMatrixPseudoInverse(tau, sitesN, trapsN, rcond=1e-20):
+    """ Get Markov's fundamental matrix (inverse).
+    
+    Equivalent to using reshapeInCanonicalForm and getMarkovAbsorbing (which
+        should be deprecated).
+
+    Parameters:
+        tau (numpy array): Traps migration matrix in canonical form.
+        sitesN (int): Number of sites.
+        trapsN (int): Number of traps.
+        rcond (float): Cutoff for small singular values.
+
+    Returns:
+        (numpy array): Time to fall into absorbing states from anywhere in landscape.
+    """
+    Q = tau[:sitesN, :sitesN]
+    R = tau[:sitesN, -trapsN:]
+    I = np.identity(Q.shape[0])
+    F = np.linalg.pinv(np.subtract(I, Q), rcond=rcond)
     return F
 
 
@@ -99,8 +120,9 @@ def initChromosome(trapsCoords: np.ndarray, fixedTrapsMask, coordsRange):
     """ Generates a random uniform chromosome for GA optimization.
     
     Parameters:
-        trapsNum (int): Number of traps to lay down in the landscape.
-        xRan (tuple of tuples of floats): XY Range for the coordinates.
+        trapsCoords (int): Number of traps to lay down in the landscape.
+        fixedTrapsMask (list of bools): Mask with coordinates that can be moved (true) and which can't (false).
+        coordsRange (tuple of tuples of floats).
     Returns:
         (list): List of xy coordinates for the traps' positions.
     """
@@ -113,9 +135,6 @@ def initChromosome(trapsCoords: np.ndarray, fixedTrapsMask, coordsRange):
             chromosome[allele+0] = np.random.uniform(xRan[0], xRan[1], 1)[0]
             chromosome[allele+1] = np.random.uniform(yRan[0], yRan[1], 1)[0]
         allele = allele + 2
-    # xCoords = np.random.uniform(xRan[0], xRan[1], trapsNum)
-    # yCoords = np.random.uniform(yRan[0], yRan[1], trapsNum)
-    # chromosome = [val for pair in zip(xCoords, yCoords) for val in pair]
     return chromosome
 
 
@@ -230,6 +249,63 @@ def cxBlend(
 ###############################################################################
 # GA (Extended)
 ###############################################################################
+def mutShuffleIndexes(individual, typeOptimMask, indpb=.5):
+    (size, clen) = (len(typeOptimMask), len(individual))
+    for i in range(size):
+        # If the allele can be mutated and was sampled
+        if (typeOptimMask[i]):
+            if (random.random() < indpb):
+                swap_indx = random.randint(0, clen-2)
+                if swap_indx >= i:
+                    swap_indx += 1
+                # If sampIx is part of the extra pool, just swap
+                if swap_indx >= size:
+                    individual[i], individual[swap_indx] = individual[swap_indx], individual[i]
+                # If sampIx is part of the placed traps, and it's optimizable
+                elif typeOptimMask[swap_indx]:
+                    individual[i], individual[swap_indx] = individual[swap_indx], individual[i]
+                # If sampIx is part of the placed traps, but not optimizable
+                else:
+                    swap_indx = random.randint(size, clen-1)
+                    individual[i], individual[swap_indx] = individual[swap_indx], individual[i]
+    return (individual, )
+
+
+def initChromosomeMixed(
+        trapsCoords, 
+        fixedTrapsMask, typeOptimMask,
+        coordsRange, trapsPool, 
+        indpb=.75
+    ):
+    coordSect = initChromosome(trapsCoords, fixedTrapsMask, coordsRange)
+    typesInit = mutShuffleIndexes(trapsPool, typeOptimMask, indpb)[0]
+    return [float(i) for i in coordSect]+list(typesInit)
+
+
+def mutateChromosomeMixed(
+        chromosome,
+        fixedTrapsMask, typeOptimMask,
+        mutCoordFun=mutateChromosome,
+        mutCoordArgs={
+            'randFun': rand.normal, 'randArgs': {'loc': 0, 'scale': 10}, 
+            'indpb': 0.5
+        },
+        mutTypeFun=mutShuffleIndexes,
+        mutTypeArgs={
+            'indpb': 0.5
+        }
+    ):
+    # Split chromosome in parts -----------------------------------------------
+    (coordsSect, typesSect) = (
+        chromosome[:len(fixedTrapsMask)], 
+        chromosome[len(fixedTrapsMask):]
+    )
+    # Mutate coordinates section ----------------------------------------------
+    coordsMut = mutCoordFun(coordsSect, fixedTrapsMask,**mutCoordArgs)[0]
+    # Mutate types section ----------------------------------------------------
+    typesMut = mutTypeFun(typesSect, typeOptimMask, **mutTypeArgs)[0]
+    # Return mutated chromosome -----------------------------------------------
+    return (coordsMut+typesMut)
 
 
 ###############################################################################
@@ -249,8 +325,35 @@ def getDaysTillTrapped(
         (float): Number of days for mosquitoes to fall into traps given the fitFuns.
     """
     funMat = getFundamentalMatrix(
-        landscape.trapsMigration, landscape.pointNumber, landscape.trapsNumber
-    )
+        landscape.trapsMigration, 
+        landscape.pointNumber, 
+        landscape.trapsNumber
+    )   
+    daysTillTrapped = getFundamentalFitness(funMat, fitFuns=fitFuns)
+    return daysTillTrapped
+
+
+def getDaysTillTrappedPseudoInverse(
+        landscape,
+        fitFuns={'outer': np.mean, 'inner': np.max},
+        rcond=1e-30
+    ):
+    """Gets the number of timesteps until a walker falls into a trap (using pseudo-inverse matrix function).
+
+    Parameters:
+        landscape (object): Landscape object to use for the analysis.
+        fitFuns (dict): Dictionary with the outer (row) and inner (col) functions to use on the matrix.
+        rcond (float): Cutoff for small singular values.
+
+    Returns:
+        (float): Number of days for mosquitoes to fall into traps given the fitFuns.
+    """
+    funMat = getFundamentalMatrixPseudoInverse(
+        landscape.trapsMigration, 
+        landscape.pointNumber, 
+        landscape.trapsNumber,
+        rcond=rcond
+    )     
     daysTillTrapped = getFundamentalFitness(funMat, fitFuns=fitFuns)
     return daysTillTrapped
 
@@ -279,6 +382,31 @@ def calcFitness(
     fit = optimFunction(landscape, fitFuns=optimFunctionArgs)
     return (float(abs(fit)), )
 
+# def calcFitnessPseudoInverse(
+#         chromosome, 
+#         landscape=None,
+#         optimFunction=getDaysTillTrappedPseudoInverse,
+#         optimFunctionArgs={'outer': np.mean, 'inner': np.max},
+#         rcond=1e-30,
+#         dims=2,
+#         clipValue=1000
+#     ):
+#     """Calculates the fitness function of the landscape given a chromosome using the matrix pseudo-inverse function (in place, so not thread-safe).
+
+#     Parameters:
+#         chromosome (floats numpy array): GA's float chromosome generated by initChromosome.
+#         landscape (object): Landscape object to use for the analysis.
+#         optimFunction (function): Function that turns a matrix into a fitness value.
+#         optimFunctionArgs (dict): Dictionary with the outer (row) and inner (col) functions to use on the matrix.
+#         rcond (float): Cutoff for small singular values.
+
+#     Returns:
+#         (tuple of floats): Landscape's fitness function.
+#     """
+#     candidateTraps = np.reshape(chromosome, (-1, dims))
+#     landscape.updateTrapsCoords(candidateTraps)
+#     fit = optimFunction(landscape, fitFuns=optimFunctionArgs, rcond=rcond)
+#     return (float(abs(fit)), )
 
 def calcSexFitness(
         chromosome,
