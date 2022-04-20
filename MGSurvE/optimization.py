@@ -4,14 +4,18 @@
 
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+import math
+import operator
 import random
+from abc import ABC
+from typing import List, Union, Optional
+
+import numpy
 import numpy as np
 import pandas as pd
 from os import path
 import numpy.random as rand
-from deap import base, creator, algorithms, tools
-
+from deap import base, creator, algorithms, tools, benchmarks
 
 ###############################################################################
 # Fitness function
@@ -70,7 +74,7 @@ def getFundamentalMatrix(tau, sitesN, trapsN):
 
 
 def getFundamentalFitness(
-        fundamentalMatrix, 
+        fundamentalMatrix,
         fitFuns={'outer': np.mean, 'inner': np.max}
     ):
     """ Get fitness from Markov's fundamental matrix.
@@ -131,7 +135,7 @@ def genFixedTrapsMask(trapsFixed, dims=2):
 
 def mutateChromosome(
         chromosome, fixedTrapsMask,
-        randFun=rand.normal, 
+        randFun=rand.normal,
         randArgs={'loc': 0, 'scale': 0.1},
         indpb=0.5
     ):
@@ -158,9 +162,9 @@ def mutateChromosome(
 
 def mutateChromosomeAsymmetric(
         chromosome, fixedTrapsMask,
-        randFun=rand.normal, 
+        randFun=rand.normal,
         randArgs={
-            'x': {'loc': 0, 'scale': 0.1}, 
+            'x': {'loc': 0, 'scale': 0.1},
             'y': {'loc': 0, 'scale': 0.1}
         },
         indpb=0.5
@@ -194,8 +198,8 @@ def mutateChromosomeAsymmetric(
 
 
 def cxBlend(
-        ind1, ind2, 
-        fixedTrapsMask, 
+        ind1, ind2,
+        fixedTrapsMask,
         alpha=.5
     ):
     """ Mates two chromosomes by "blend" based on the provided mask (in place).
@@ -251,7 +255,7 @@ def getDaysTillTrapped(
 
 
 def calcFitness(
-        chromosome, 
+        chromosome,
         landscape=None,
         optimFunction=getDaysTillTrapped,
         optimFunctionArgs={'outer': np.mean, 'inner': np.max},
@@ -276,7 +280,7 @@ def calcFitness(
 
 
 def calcSexFitness(
-        chromosome, 
+        chromosome,
         landscapeMale=None, landscapeFemale=None,
         weightMale=1, weightFemale=1,
         optimFunction=getDaysTillTrapped,
@@ -301,7 +305,7 @@ def calcSexFitness(
     landscapeMale.updateTrapsCoords(candidateTraps)
     landscapeFemale.updateTrapsCoords(candidateTraps)
     fit = [
-        abs(optimFunction(lnd, fitFuns=optimFunctionArgs)) for lnd in 
+        abs(optimFunction(lnd, fitFuns=optimFunctionArgs)) for lnd in
         (landscapeMale, landscapeFemale)
     ]
     fitVal = (fit[0]*weightMale+fit[1]*weightFemale)/(2*(weightMale+weightFemale))
@@ -351,13 +355,13 @@ def importLog(
 # GA Wrapper
 ###############################################################################
 def optimizeTrapsGA(
-        landscape, 
+        landscape,
         generations=1000,
         bbox='auto',pop_size='auto',
-        mating_params={'mate': .3, 'cxpb': 0.5}, 
+        mating_params={'mate': .3, 'cxpb': 0.5},
         mutation_params={'mean': 0, 'sd': 100, 'mutpb': .4, 'ipb': .5},
         selection_params={'tSize': 3},
-        optimFunction=getDaysTillTrapped, 
+        optimFunction=getDaysTillTrapped,
         fitFuns={'outer': np.mean, 'inner': np.max},
         verbose=True
     ):
@@ -377,7 +381,7 @@ def optimizeTrapsGA(
 
     Returns:
         (object, dataframe): Returns the landscape and logbook for the optimization.
-    """    
+    """
     if bbox == 'auto':
         bbox = landscape.getBoundingBox()
     # GA parameters -----------------------------------------------------------
@@ -387,7 +391,7 @@ def optimizeTrapsGA(
         mating_params = {'mate': .3, 'cxpb': 0.5}
     if mutation_params == 'auto':
         mutation_params = {
-            'mean': 0, 'sd': max([i[1]-i[0] for i in bbox])/2.5, 
+            'mean': 0, 'sd': max([i[1]-i[0] for i in bbox])/2.5,
             'mutpb': .4, 'ipb': .5
         }
     if selection_params == 'auto':
@@ -402,38 +406,38 @@ def optimizeTrapsGA(
     creator.create("Individual", list, fitness=creator.FitnessMin)
     # Creators ----------------------------------------------------------------
     toolbox.register(
-        "initChromosome", initChromosome, 
-        trapsCoords=landscape.trapsCoords, 
-        fixedTrapsMask=trapsMask, 
+        "initChromosome", initChromosome,
+        trapsCoords=landscape.trapsCoords,
+        fixedTrapsMask=trapsMask,
         coordsRange=bbox
     )
     toolbox.register(
-        "individualCreator", tools.initIterate, 
+        "individualCreator", tools.initIterate,
         creator.Individual, toolbox.initChromosome
     )
     toolbox.register(
-        "populationCreator", tools.initRepeat, 
+        "populationCreator", tools.initRepeat,
         list, toolbox.individualCreator
     )
     # Mating and mutation operators -------------------------------------------
     toolbox.register(
-        "mate", cxBlend, 
+        "mate", cxBlend,
         fixedTrapsMask=trapsMask,
         alpha=mating_params['mate']
     )
     toolbox.register(
         "mutate", mutateChromosome,
         fixedTrapsMask=trapsMask,
-        randArgs={'loc': mutation_params['mean'], 'scale': mutation_params['sd']}, 
+        randArgs={'loc': mutation_params['mean'], 'scale': mutation_params['sd']},
         indpb=mutation_params['ipb']
     )
     # Select and evaluate -----------------------------------------------------
     toolbox.register(
-        "select", tools.selTournament, 
+        "select", tools.selTournament,
         tournsize=selection_params['tSize']
     )
     toolbox.register(
-        "evaluate", calcFitness, 
+        "evaluate", calcFitness,
         landscape=landscape,
         optimFunction=optimFunction,
         optimFunctionArgs=fitFuns
@@ -443,7 +447,7 @@ def optimizeTrapsGA(
     ###########################################################################
     pop = toolbox.populationCreator(n=pop_size)
     hof = tools.HallOfFame(1)
-    stats = tools.Statistics(lambda ind: ind.fitness.values)   
+    stats = tools.Statistics(lambda ind: ind.fitness.values)
     stats.register("min", np.min)
     stats.register("avg", np.mean)
     stats.register("max", np.max)
@@ -457,8 +461,8 @@ def optimizeTrapsGA(
     # Optimization Cycle
     ###########################################################################
     (pop, logbook) = algorithms.eaSimple(
-        pop, toolbox, ngen=generations,  
-        cxpb=mating_params['cxpb'], mutpb=mutation_params['mutpb'],    
+        pop, toolbox, ngen=generations,
+        cxpb=mating_params['cxpb'], mutpb=mutation_params['mutpb'],
         stats=stats, halloffame=hof, verbose=verbose
     )
     ###############################################################################
@@ -475,10 +479,10 @@ def optimizeTwoSexesTrapsGA(
         landscapeMale, landscapeFemale, sexWeights={'M': .5, 'F': .5},
         generations=1000,
         bbox='auto', pop_size='auto',
-        mating_params={'mate': .3, 'cxpb': 0.5}, 
+        mating_params={'mate': .3, 'cxpb': 0.5},
         mutation_params={'mean': 0, 'sd': 100, 'mutpb': .4, 'ipb': .5},
         selection_params={'tSize': 3},
-        optimFunction=getDaysTillTrapped, 
+        optimFunction=getDaysTillTrapped,
         fitFuns={'outer': np.mean, 'inner': np.max},
         verbose=True
     ):
@@ -500,7 +504,7 @@ def optimizeTwoSexesTrapsGA(
 
     Returns:
         (object, dataframe): Returns the landscape and logbook for the optimization.
-    """    
+    """
     if bbox == 'auto':
         bbox = landscapeMale.getBoundingBox()
     # GA parameters -----------------------------------------------------------
@@ -510,7 +514,7 @@ def optimizeTwoSexesTrapsGA(
         mating_params = {'mate': .3, 'cxpb': 0.5}
     if mutation_params == 'auto':
         mutation_params = {
-            'mean': 0, 'sd': max([i[1]-i[0] for i in bbox])/2.5, 
+            'mean': 0, 'sd': max([i[1]-i[0] for i in bbox])/2.5,
             'mutpb': .4, 'ipb': .5
         }
     if selection_params == 'auto':
@@ -525,38 +529,38 @@ def optimizeTwoSexesTrapsGA(
     creator.create("Individual", list, fitness=creator.FitnessMin)
     # Creators ----------------------------------------------------------------
     toolbox.register(
-        "initChromosome", initChromosome, 
-        trapsCoords=landscapeMale.trapsCoords, 
-        fixedTrapsMask=trapsMask, 
+        "initChromosome", initChromosome,
+        trapsCoords=landscapeMale.trapsCoords,
+        fixedTrapsMask=trapsMask,
         coordsRange=bbox
     )
     toolbox.register(
-        "individualCreator", tools.initIterate, 
+        "individualCreator", tools.initIterate,
         creator.Individual, toolbox.initChromosome
     )
     toolbox.register(
-        "populationCreator", tools.initRepeat, 
+        "populationCreator", tools.initRepeat,
         list, toolbox.individualCreator
     )
     # Mating and mutation operators -------------------------------------------
     toolbox.register(
-        "mate", cxBlend, 
+        "mate", cxBlend,
         fixedTrapsMask=trapsMask,
         alpha=mating_params['mate']
     )
     toolbox.register(
         "mutate", mutateChromosome,
         fixedTrapsMask=trapsMask,
-        randArgs={'loc': mutation_params['mean'], 'scale': mutation_params['sd']}, 
+        randArgs={'loc': mutation_params['mean'], 'scale': mutation_params['sd']},
         indpb=mutation_params['ipb']
     )
     # Select and evaluate -----------------------------------------------------
     toolbox.register(
-        "select", tools.selTournament, 
+        "select", tools.selTournament,
         tournsize=selection_params['tSize']
     )
-    toolbox.register("evaluate", 
-        calcSexFitness, 
+    toolbox.register("evaluate",
+        calcSexFitness,
         landscapeMale=landscapeMale,landscapeFemale=landscapeFemale,
         weightMale=sexWeights['M'], weightFemale=sexWeights['F'],
         optimFunction=optimFunction,
@@ -567,7 +571,7 @@ def optimizeTwoSexesTrapsGA(
     ###########################################################################
     pop = toolbox.populationCreator(n=pop_size)
     hof = tools.HallOfFame(1)
-    stats = tools.Statistics(lambda ind: ind.fitness.values)   
+    stats = tools.Statistics(lambda ind: ind.fitness.values)
     stats.register("min", np.min)
     stats.register("avg", np.mean)
     stats.register("max", np.max)
@@ -581,8 +585,8 @@ def optimizeTwoSexesTrapsGA(
     # Optimization Cycle
     ###########################################################################
     (pop, logbook) = algorithms.eaSimple(
-        pop, toolbox, ngen=generations,  
-        cxpb=mating_params['cxpb'], mutpb=mutation_params['mutpb'],    
+        pop, toolbox, ngen=generations,
+        cxpb=mating_params['cxpb'], mutpb=mutation_params['mutpb'],
         stats=stats, halloffame=hof, verbose=verbose
     )
     ###############################################################################
@@ -594,3 +598,149 @@ def optimizeTwoSexesTrapsGA(
     landscapeFemale.updateTrapsCoords(bestTraps)
     logDF = pd.DataFrame(logbook)
     return ((landscapeMale, landscapeFemale), logDF)
+
+
+class ParticleProps(ABC):
+    speed: List[float]
+    fitness: base.Fitness
+    speed_min: int
+    speed_max: int
+    best: "Particle"
+
+
+Particle = Union[List[float], ParticleProps]
+
+
+def optimize_traps_pso() -> None:
+    """Obtains the optimal position for a given set of traps
+
+    Returns:
+        None
+    """
+    def generate_particle(
+        size: int,
+        position_min: int,
+        position_max: int,
+        speed_min: int,
+        speed_max: int
+    ) -> Particle:
+        """Initializes a new Particle
+
+        Args:
+            size: number of attributes for the particle
+            position_min: minimum position of a particle
+            position_max: maximum position of a particle
+            speed_min: minimum speed of a particle
+            speed_max: maximum speed of a particle
+
+        Returns:
+            A new Particle
+        """
+        particle: Particle = creator.Particle(
+            (random.uniform(position_min, position_max) for _ in range(size)),
+        )
+        particle.speed = [
+            random.uniform(speed_min, speed_max) for _ in range(size)
+        ]
+        particle.speed_max = speed_max
+        particle.speed_min = speed_min
+
+        return particle
+
+    def update_particle(
+        particle: Particle, best: Particle, phi1: float, phi2: float
+    ) -> Particle:
+        u1 = (random.uniform(0, phi1) for _ in range(len(particle)))
+        u2 = (random.uniform(0, phi2) for _ in range(len(particle)))
+
+        v_u1 = map(
+            operator.mul, u1, map(operator.sub, particle.best, particle)
+        )
+        v_u2 = map(operator.mul, u2, map(operator.sub, best, particle))
+
+        particle.speed = list(
+            map(operator.add, particle.speed, map(operator.add, v_u1, v_u2))
+        )
+
+        for i, speed in enumerate(particle.speed):
+            if abs(speed) < particle.speed_min:
+                particle.speed[i] = math.copysign(particle.speed_min, speed)
+            elif abs(speed) > particle.speed_max:
+                particle.speed[i] = math.copysign(particle.speed_max, speed)
+
+        particle[:] = list(map(operator.add, particle, particle.speed))
+
+        return particle
+
+    def create_toolbox() -> base.Toolbox:
+        toolbox = base.Toolbox()
+        toolbox.register(
+            "generate_particle",
+            generate_particle,
+            size=2,
+            position_min=-6,
+            position_max=6,
+            speed_min=-3,
+            speed_max=3
+        )
+        toolbox.register(
+            "population", tools.initRepeat, list, toolbox.generate_particle
+        )
+        toolbox.register("update_particle", update_particle, phi1=2., phi2=2.)
+        toolbox.register("evaluate", benchmarks.himmelblau)
+
+        return toolbox
+
+    # Create necessary objects
+    # -1. in weights because we want to minimize a function
+    creator.create("FitnessMin", base.Fitness, weights=(-1.,))
+    creator.create(
+        "Particle",
+        list,
+        fitness=creator.FitnessMin,
+        speed=list,
+        speed_min=None,
+        speed_max=None,
+        best=None
+    )
+
+    toolbox = create_toolbox()
+    population: List[Particle] = toolbox.population(n=5)
+    stats = tools.Statistics(lambda ind: ind.fitness.values)
+    stats.register("avg", numpy.mean)
+    stats.register("std", numpy.std)
+    stats.register("min", numpy.min)
+    stats.register("max", numpy.max)
+
+    logbook = tools.Logbook()
+    logbook.header = ["gen", "evals"] + stats.fields
+
+    GEN = 1000
+    best: Optional[Particle] = None
+
+    for g in range(GEN):
+        for particle in population:
+            particle.fitness.values = toolbox.evaluate(particle)
+            if not particle.best or particle.best.fitness < particle.fitness:
+                particle.best = creator.Particle(particle)
+                particle.best.fitness.values = particle.fitness.values
+            if not best or best.fitness < particle.fitness:
+                best = creator.Particle(particle)
+                best.fitness.values = particle.fitness.values
+
+        for particle in population:
+            toolbox.update_particle(particle, best)
+
+        logbook.record(gen=g, evals=len(population), **stats.compile(population))
+        print(logbook.stream)
+
+    if not best:
+        raise Exception("Could not find best option")
+
+    print("\n\n\n==================\n\n")
+    print(population)
+    print("\n==================\n\n")
+    print(logbook)
+    print("\n==================\n\n")
+    print(best)
+    print("\n==================")
