@@ -16,7 +16,7 @@ import pandas as pd
 import numpy.random as rand
 from deap import base, creator, algorithms, tools, benchmarks
 
-from .landscape import Landscape
+# from . import Landscape
 
 ###############################################################################
 # Fitness function
@@ -95,7 +95,7 @@ def getFundamentalFitness(
 ###############################################################################
 # GA (Basic)
 ###############################################################################
-def initChromosome(trapsCoords, fixedTrapsMask, coordsRange):
+def initChromosome(trapsCoords: np.ndarray, fixedTrapsMask, coordsRange):
     """ Generates a random uniform chromosome for GA optimization.
     
     Parameters:
@@ -119,7 +119,7 @@ def initChromosome(trapsCoords, fixedTrapsMask, coordsRange):
     return chromosome
 
 
-def genFixedTrapsMask(trapsFixed, dims=2):
+def genFixedTrapsMask(trapsFixed, dims=2) -> np.ndarray:
     """ Creates a mask for the fixed traps (non-movable).
     
     Parameters:
@@ -613,47 +613,70 @@ Particle = Union[List[float], ParticleProps]
 
 
 def optimize_traps_pso(
-    landscape: Landscape,
+    landscape: Any,
     generations: int = 1000,
     bbox: Tuple[Tuple[float, float], Tuple[float, float]] = None,
     pop_size: int = None,
-    mating_params: Dict[str, float] = None,
-    mutation_params: Dict[str, float] = None,
-    selection_params: Dict[str, float] = None,
     optim_function: Callable[
-        [Landscape, Dict[str, Any]], float
+        [Any, Dict[str, Any]], float
     ] = getDaysTillTrapped,
     fit_funcs: Dict[str, float] = None,
     verbose: bool = True,
-) -> Tuple[Landscape, pd.DataFrame]:
+) -> Tuple[Any, pd.DataFrame]:
     """Obtains the optimal position for a given set of traps
 
     Returns:
         None
     """
 
-    mating_params = mating_params or {'mate': .3, 'cxpb': 0.5}
-    mutation_params = mutation_params or {
-        'mean': 0, 'sd': 100, 'mutpb': .4, 'ipb': .5
-    }
-    selection_params = selection_params or {'tSize': 3}
     fit_funcs = fit_funcs or {'outer': np.mean, 'inner': np.max}
     bbox = bbox or landscape.getBoundingBox()
     pop_size = pop_size or int(10 * (landscape.trapsNumber * 1.25))
 
+    traps_mask = genFixedTrapsMask(landscape.trapsFixed)
+
+    logbook, population, best = pso_simple(
+        generations=generations,
+        population_size=pop_size,
+        landscape=landscape,
+        traps_mask=traps_mask,
+        bbox=bbox,
+        optim_function=optim_function,
+        optim_function_args=fit_funcs,
+    )
+
+    if verbose:
+        print("\n\n\n==================\n\n")
+        print(population)
+        print("\n==================\n\n")
+        print(logbook)
+        print("\n==================\n\n")
+        print(best)
+        print("\n==================")
+
+    best_traps = np.reshape(best, (-1, 2))
+    landscape.updateTrapsCoords(best_traps)
+
+    return landscape, pd.DataFrame(logbook)
+
+
+def pso_simple(
+    generations: int,
+    population_size: int,
+    landscape: Any,
+    traps_mask: np.ndarray,
+    bbox: Tuple[Tuple[float, float], Tuple[float, float]],
+    optim_function,
+    optim_function_args,
+    fitness_function=calcFitness,
+) -> Tuple[tools.Logbook, List[Particle], Particle]:
     def generate_particle(
-        size: int,
-        position_min: int,
-        position_max: int,
         speed_min: int,
         speed_max: int
     ) -> Particle:
         """Initializes a new Particle
 
         Args:
-            size: number of attributes for the particle
-            position_min: minimum position of a particle
-            position_max: maximum position of a particle
             speed_min: minimum speed of a particle
             speed_max: maximum speed of a particle
 
@@ -661,10 +684,15 @@ def optimize_traps_pso(
             A new Particle
         """
         particle: Particle = creator.Particle(
-            (random.uniform(position_min, position_max) for _ in range(size)),
+            initChromosome(
+                trapsCoords=landscape.trapsCoords,
+                fixedTrapsMask=traps_mask,
+                coordsRange=bbox
+            ),
         )
         particle.speed = [
-            random.uniform(speed_min, speed_max) for _ in range(size)
+            random.uniform(speed_min, speed_max)
+            for _ in range(landscape.trapsCoords.shape[0] * 2)
         ]
         particle.speed_max = speed_max
         particle.speed_min = speed_min
@@ -697,23 +725,26 @@ def optimize_traps_pso(
         return particle
 
     def create_toolbox() -> base.Toolbox:
-        toolbox = base.Toolbox()
-        toolbox.register(
+        new_toolbox = base.Toolbox()
+        new_toolbox.register(
             "generate_particle",
             generate_particle,
-            size=2,
-            position_min=-6,
-            position_max=6,
             speed_min=-3,
             speed_max=3
         )
-        toolbox.register(
-            "population", tools.initRepeat, list, toolbox.generate_particle
+        new_toolbox.register(
+            "population", tools.initRepeat, list, new_toolbox.generate_particle
         )
-        toolbox.register("update_particle", update_particle, phi1=2., phi2=2.)
-        toolbox.register("evaluate", benchmarks.himmelblau)
+        new_toolbox.register("update_particle", update_particle, phi1=2., phi2=2.)
+        new_toolbox.register(
+            "evaluate",
+            fitness_function,
+            landscape=landscape,
+            optimFunction=optim_function,
+            optimFunctionArgs=optim_function_args,
+        )
 
-        return toolbox
+        return new_toolbox
 
     # Create necessary objects
     # -1. in weights because we want to minimize a function
@@ -729,7 +760,7 @@ def optimize_traps_pso(
     )
 
     toolbox = create_toolbox()
-    population: List[Particle] = toolbox.population(n=5)
+    population: List[Particle] = toolbox.population(n=population_size)
     stats = tools.Statistics(lambda ind: ind.fitness.values)
     stats.register("avg", np.mean)
     stats.register("std", np.std)
@@ -739,11 +770,10 @@ def optimize_traps_pso(
     logbook = tools.Logbook()
     logbook.header = ["gen", "evals"] + stats.fields
 
-    GEN = 1000
     best: Optional[Particle] = None
 
-    for g in range(GEN):
-        for particle in population:
+    for g in range(generations):
+        for i, particle in enumerate(population):
             particle.fitness.values = toolbox.evaluate(particle)
             if not particle.best or particle.best.fitness < particle.fitness:
                 particle.best = creator.Particle(particle)
@@ -761,10 +791,4 @@ def optimize_traps_pso(
     if not best:
         raise Exception("Could not find best option")
 
-    print("\n\n\n==================\n\n")
-    print(population)
-    print("\n==================\n\n")
-    print(logbook)
-    print("\n==================\n\n")
-    print(best)
-    print("\n==================")
+    return logbook, population, best
