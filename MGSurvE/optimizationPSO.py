@@ -3,18 +3,16 @@ import random
 import math
 import unittest
 import numpy as np
-
-from deap import base
-from deap import creator
-from deap import tools
-
 import math
-import numpy as np
 import pandas as pd
 from copy import deepcopy
 from deap import base, creator, algorithms, tools
 import MGSurvE as srv
 import unittest
+
+from deap import base
+from deap import creator
+from deap import tools
 
 def setup_stats(): 
     """
@@ -33,7 +31,14 @@ class Particle_Swarm:
     trpMsk = None
     immovable_trap_loc_mask = None
 
-    def __init__(self, traps, p_min, p_max, lnd, num_particles=50, num_gens=500, s_min=-3, s_max=3):
+    def __init__(
+            self, traps, p_min, p_max, lnd, 
+            num_particles=50, num_gens=500, 
+            s_min=-3, s_max=3,
+            phi1=2, phi2=2,
+            optimFunction=srv.getDaysTillTrapped,
+            optimFunctionArgs={'outer': np.mean, 'inner': np.max}
+        ):
         """
         Initializes Particle Swarm Optimization. 
         
@@ -45,8 +50,8 @@ class Particle_Swarm:
                 f: 0 if movable, 1 if immovable 
             num_particles: number of particles
             num_gens: number of generations
-            p_min: minimum logitude/latitude
-            p_max: maximum logitude/latitude
+            p_min: minimum longitude/latitude
+            p_max: maximum longitude/latitude
             s_min: minimum speed of particle
             s_max: maximum speed of particle
             lnd: landscape defined by user
@@ -58,7 +63,11 @@ class Particle_Swarm:
         self.s_max = s_max
         self.p_min = p_min
         self.p_max = p_max
+        self.phi1 = phi1
+        self.phi2 = phi2
         self.lnd = deepcopy(lnd)
+        self.optimFunction = optimFunction
+        self.optimFunctionArgs = optimFunctionArgs
 
         self.num_traps = traps.shape[0]
         Particle_Swarm.immovable_trap_loc_mask = self.getImmovableLocMask(traps)
@@ -104,8 +113,8 @@ class Particle_Swarm:
                 v_u2 = r2 * (global_best - X[t]) = u2 * (best - part)
         """
         # calculate V[t + 1]
-        u1 = (random.uniform(0, phi1) for _ in range(len(part)))
-        u2 = (random.uniform(0, phi2) for _ in range(len(part)))
+        u1 = np.random.uniform(low=0, high=phi1, size=len(part))
+        u2 = np.random.uniform(low=0, high=phi2, size=len(part))
         v_u1 = map(operator.mul, u1, map(operator.sub, part.best, part))
         v_u2 = map(operator.mul, u2, map(operator.sub, best, part))
         part.speed = list(map(operator.add, part.speed, map(operator.add, v_u1, v_u2))) # update speed
@@ -117,11 +126,8 @@ class Particle_Swarm:
             elif abs(speed) > part.smax:
                 part.speed[i] = math.copysign(part.smax, speed)
 
-        ## WILL REMOVE WHEN FINISHED TESTING 
-        print(part)
-        
         # update particles; calculate X[t+1]
-        part[:] = list( map(operator.add, part, map(operator.mul, part.speed, Particle_Swarm.trpMsk)))
+        part[:] = list(map(operator.add, part, map(operator.mul, part.speed, Particle_Swarm.trpMsk)))
     
     
     def evaluate(self):
@@ -163,8 +169,8 @@ class Particle_Swarm:
             # gather all the fitnesses in one list and print the stats
             logbook.record(gen=g, evals=len(pop), **stats.compile(pop))
             print(logbook.stream)
-
-        return pop, logbook, best
+        log = pd.DataFrame(logbook)
+        return pop, log, best
 
     def getImmovableLocMask(self, traps_df):
         """
@@ -198,14 +204,24 @@ class Particle_Swarm:
         Output: toolbox object for DEAP package 
         """
         toolbox = base.Toolbox()
-        toolbox.register("particle", Particle_Swarm.generate,size=2*self.num_traps, p_min=self.p_min, p_max=self.p_max, smin=self.s_min, smax=self.s_max)
-        toolbox.register("population", tools.initRepeat, list, toolbox.particle) 
-        toolbox.register("update", Particle_Swarm.updateParticle, phi1=1.0, phi2=1.0)
+        toolbox.register("particle", 
+            Particle_Swarm.generate,size=2*self.num_traps, 
+            p_min=self.p_min, p_max=self.p_max, 
+            smin=self.s_min, smax=self.s_max
+        )
+        toolbox.register("population", 
+            tools.initRepeat, list, toolbox.particle
+        ) 
+        toolbox.register("update", 
+            Particle_Swarm.updateParticle, 
+            phi1=self.phi1, phi2=self.phi2
+        )
         toolbox.register("evaluate", 
             srv.calcFitness, 
             landscape=self.lnd,
-            optimFunction=srv.getDaysTillTrapped,
-            optimFunctionArgs={'outer': np.mean, 'inner': np.max})
+            optimFunction=self.optimFunction,
+            optimFunctionArgs=self.optimFunctionArgs
+        )
         return toolbox
 
 

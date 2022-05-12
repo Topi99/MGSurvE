@@ -94,6 +94,15 @@ def getFundamentalMatrixPseudoInverse(tau, sitesN, trapsN, rcond=1e-20):
     F = np.linalg.pinv(np.subtract(I, Q), rcond=rcond)
     return F
 
+def getFundamentalVector(tau, sitesN):
+    # Equivalent to:
+    #   np.sum(srv.getFundamentalMatrix(tau, sitesN, trapsN), axis=1)
+    #   np.sum(srv.getFundamentalMatrixPseudoInverse(tau, sitesN, trapsN), axis=1)
+    Q = tau[:sitesN, :sitesN]
+    I = np.identity(Q.shape[0])
+    o = np.ones(Q.shape[0])
+    F = np.linalg.solve(I-Q, o)
+    return F
 
 def getFundamentalFitness(
         fundamentalMatrix,
@@ -108,7 +117,14 @@ def getFundamentalFitness(
     Returns:
         (float): Summarized fitness function for the fundamental matrix.
     """
-    daysInSites = np.apply_along_axis(fitFuns['inner'], 1, fundamentalMatrix)
+    if fundamentalMatrix.ndim == 2:
+        # Using the Markov matrix
+        daysInSites = np.apply_along_axis(
+            fitFuns['inner'], 1, fundamentalMatrix
+        )
+    else:
+        # Using the Markov vector
+        daysInSites = fundamentalMatrix
     daysTillTrapped = fitFuns['outer'](daysInSites)
     return daysTillTrapped
 
@@ -355,6 +371,17 @@ def getDaysTillTrappedPseudoInverse(
         rcond=rcond
     )     
     daysTillTrapped = getFundamentalFitness(funMat, fitFuns=fitFuns)
+    return daysTillTrapped
+
+
+def getDaysTillTrappedVector(
+        landscape, fitFuns={'outer': np.mean, 'inner': None}
+    ):
+    funVct = getFundamentalVector(
+        landscape.trapsMigration, 
+        landscape.pointNumber
+    )   
+    daysTillTrapped = getFundamentalFitness(funVct, fitFuns=fitFuns)
     return daysTillTrapped
 
 
