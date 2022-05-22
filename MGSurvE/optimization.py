@@ -536,7 +536,7 @@ def optimizeTrapsGA(
         verbose (bool, optional): Verbosity on the optimization. Defaults to True.
 
     Returns:
-        (object, dataframe): Returns the landscape and logbook for the optimization.
+        (Any, dataframe): Returns the landscape and logbook for the optimization.
     """
     if bbox == 'auto':
         bbox = landscape.getBoundingBox()
@@ -774,9 +774,15 @@ def optimize_traps_pso(
     pop_size: int = None,
     optim_function: Callable[
         [Any, Dict[str, Any]], float
-    ] = getDaysTillTrapped,
+    ] = getDaysTillTrappedPseudoInverse,
     fit_funcs: Dict[str, float] = None,
     verbose: bool = True,
+    speed_min=-5,
+    speed_max=5,
+    phi1=2,
+    phi2=2,
+    w_max=1,
+    w_min=1,
 ) -> Tuple[Any, pd.DataFrame]:
     """Obtains the optimal position for a given set of traps
 
@@ -786,7 +792,7 @@ def optimize_traps_pso(
 
     fit_funcs = fit_funcs or {'outer': np.mean, 'inner': np.max}
     bbox = bbox or landscape.getBoundingBox()
-    pop_size = pop_size or int(10 * (landscape.trapsNumber * 1.25))
+    pop_size = pop_size or int(5 * (landscape.trapsNumber * 1))
 
     traps_mask = genFixedTrapsMask(landscape.trapsFixed)
 
@@ -798,6 +804,12 @@ def optimize_traps_pso(
         bbox=bbox,
         optim_function=optim_function,
         optim_function_args=fit_funcs,
+        speed_min=speed_min,
+        speed_max=speed_max,
+        phi1=phi1,
+        phi2=phi2,
+        w_max=w_max,
+        w_min=w_min,
     )
 
     if verbose:
@@ -823,9 +835,15 @@ def pso_simple(
     bbox: Tuple[Tuple[float, float], Tuple[float, float]],
     optim_function,
     optim_function_args,
+    speed_min,
+    speed_max,
+    phi1,
+    phi2,
+    w_max,
+    w_min,
     fitness_function=calcFitness,
 ) -> Tuple[tools.Logbook, List[Particle], Particle]:
-    def generate_particle(
+    def _generate_particle(
         speed_min: int,
         speed_max: int
     ) -> Particle:
@@ -854,19 +872,30 @@ def pso_simple(
 
         return particle
 
-    def update_particle(
-        particle: Particle, best: Particle, phi1: float, phi2: float
+    def _update_particle(
+        particle: Particle,
+        best: Particle,
+        phi1: float,
+        phi2: float,
+        w_max: float,
+        w_min: float,
+        max_iter: int,
+        curr: int,
     ) -> Particle:
         u1 = (random.uniform(0, phi1) for _ in range(len(particle)))
         u2 = (random.uniform(0, phi2) for _ in range(len(particle)))
+        weight = w_max * math.exp(((max_iter - curr) / max_iter) - 1) - w_min
+        weights = (weight for _ in range(len(particle)))
 
         v_u1 = map(
             operator.mul, u1, map(operator.sub, particle.best, particle)
         )
         v_u2 = map(operator.mul, u2, map(operator.sub, best, particle))
 
+        weighted_speed = map(operator.mul, weights, particle.speed)
+
         particle.speed = list(
-            map(operator.add, particle.speed, map(operator.add, v_u1, v_u2))
+            map(operator.add, weighted_speed, map(operator.add, v_u1, v_u2))
         )
 
         for i, speed in enumerate(particle.speed):
@@ -879,18 +908,26 @@ def pso_simple(
 
         return particle
 
-    def create_toolbox() -> base.Toolbox:
+    def _create_toolbox() -> base.Toolbox:
         new_toolbox = base.Toolbox()
         new_toolbox.register(
             "generate_particle",
-            generate_particle,
-            speed_min=-3,
-            speed_max=3
+            _generate_particle,
+            speed_min=speed_min,
+            speed_max=speed_max
         )
         new_toolbox.register(
             "population", tools.initRepeat, list, new_toolbox.generate_particle
         )
-        new_toolbox.register("update_particle", update_particle, phi1=2., phi2=2.)
+        new_toolbox.register(
+            "update_particle",
+            _update_particle,
+            phi1=phi1,
+            phi2=phi2,
+            w_max=w_max,
+            w_min=w_min,
+            max_iter=generations,
+        )
         new_toolbox.register(
             "evaluate",
             fitness_function,
@@ -914,13 +951,22 @@ def pso_simple(
         best=None
     )
 
-    toolbox = create_toolbox()
+    toolbox = _create_toolbox()
     population: List[Particle] = toolbox.population(n=population_size)
     stats = tools.Statistics(lambda ind: ind.fitness.values)
+    stats.register("min", np.min)
     stats.register("avg", np.mean)
     stats.register("std", np.std)
-    stats.register("min", np.min)
     stats.register("max", np.max)
+    stats.register(
+        "best", lambda fitnessValues: fitnessValues.index(min(fitnessValues))
+    )
+    stats.register(
+        "traps",
+        lambda fitnessValues: population[
+            fitnessValues.index(min(fitnessValues))
+        ],
+    )
 
     logbook = tools.Logbook()
     logbook.header = ["gen", "evals"] + stats.fields
@@ -938,7 +984,7 @@ def pso_simple(
                 best.fitness.values = particle.fitness.values
 
         for particle in population:
-            toolbox.update_particle(particle, best)
+            toolbox.update_particle(particle, best, curr=g)
 
         logbook.record(gen=g, evals=len(population), **stats.compile(population))
         print(logbook.stream)
